@@ -40,27 +40,6 @@
 
 //#define DEBUG_PIPEWIRE
 
-#if !PW_CHECK_VERSION(0, 3, 62)
-enum spa_meta_videotransform_value {
-	SPA_META_TRANSFORMATION_None = 0,   /**< no transform */
-	SPA_META_TRANSFORMATION_90,         /**< 90 degree counter-clockwise */
-	SPA_META_TRANSFORMATION_180,        /**< 180 degree counter-clockwise */
-	SPA_META_TRANSFORMATION_270,        /**< 270 degree counter-clockwise */
-	SPA_META_TRANSFORMATION_Flipped,    /**< 180 degree flipped around the vertical axis. Equivalent
-						  * to a reflexion through the vertical line splitting the
-						  * bufffer in two equal sized parts */
-	SPA_META_TRANSFORMATION_Flipped90,  /**< flip then rotate around 90 degree counter-clockwise */
-	SPA_META_TRANSFORMATION_Flipped180, /**< flip then rotate around 180 degree counter-clockwise */
-	SPA_META_TRANSFORMATION_Flipped270, /**< flip then rotate around 270 degree counter-clockwise */
-};
-
-#define SPA_META_VideoTransform 8
-
-struct spa_meta_videotransform {
-	uint32_t transform; /**< orientation transformation that was applied to the buffer */
-};
-#endif
-
 #define CURSOR_META_SIZE(width, height) \
 	(sizeof(struct spa_meta_cursor) + sizeof(struct spa_meta_bitmap) + width * height * 4)
 
@@ -145,15 +124,6 @@ static bool parse_pw_version(struct obs_pw_version *dst, const char *version)
 {
 	int n_matches = sscanf(version, "%d.%d.%d", &dst->major, &dst->minor, &dst->micro);
 	return n_matches == 3;
-}
-
-static bool check_pw_version(const struct obs_pw_version *pw_version, int major, int minor, int micro)
-{
-	if (pw_version->major != major)
-		return pw_version->major > major;
-	if (pw_version->minor != minor)
-		return pw_version->minor > minor;
-	return pw_version->micro >= micro;
 }
 
 static void update_pw_versions(obs_pipewire *obs_pw, const char *version)
@@ -263,10 +233,8 @@ static const uint32_t supported_formats_async[] = {
 #define N_SUPPORTED_FORMATS_ASYNC (sizeof(supported_formats_async) / sizeof(supported_formats_async[0]))
 
 static const uint32_t supported_formats_sync[] = {
-	SPA_VIDEO_FORMAT_BGRA,       SPA_VIDEO_FORMAT_RGBA,       SPA_VIDEO_FORMAT_BGRx, SPA_VIDEO_FORMAT_RGBx,
-#if PW_CHECK_VERSION(0, 3, 41)
-	SPA_VIDEO_FORMAT_ABGR_210LE, SPA_VIDEO_FORMAT_xBGR_210LE,
-#endif
+	SPA_VIDEO_FORMAT_BGRA,	     SPA_VIDEO_FORMAT_RGBA,	  SPA_VIDEO_FORMAT_BGRx,
+	SPA_VIDEO_FORMAT_RGBx,	     SPA_VIDEO_FORMAT_ABGR_210LE, SPA_VIDEO_FORMAT_xBGR_210LE,
 };
 
 #define N_SUPPORTED_FORMATS_SYNC (sizeof(supported_formats_sync) / sizeof(supported_formats_sync[0]))
@@ -357,7 +325,6 @@ static inline struct spa_pod *build_format(obs_pipewire_stream *obs_pw_stream, s
 static bool build_format_params(obs_pipewire_stream *obs_pw_stream, struct spa_pod_builder *pod_builder,
 				const struct spa_pod ***param_list, uint32_t *n_params)
 {
-	obs_pipewire *obs_pw = obs_pw_stream->obs_pw;
 	uint32_t params_count = 0;
 
 	const struct spa_pod **params;
@@ -374,9 +341,6 @@ static bool build_format_params(obs_pipewire_stream *obs_pw_stream, struct spa_p
 		return false;
 	}
 
-	if (!check_pw_version(&obs_pw->server_version, 0, 3, 33))
-		goto build_shm;
-
 	for (size_t i = 0; i < obs_pw_stream->format_info.num; i++) {
 		if (obs_pw_stream->format_info.array[i].modifiers.num == 0) {
 			continue;
@@ -387,7 +351,6 @@ static bool build_format_params(obs_pipewire_stream *obs_pw_stream, struct spa_p
 						      obs_pw_stream->format_info.array[i].modifiers.num);
 	}
 
-build_shm:
 	for (size_t i = 0; i < obs_pw_stream->format_info.num; i++) {
 		params[params_count++] = build_format(obs_pw_stream, pod_builder,
 						      obs_pw_stream->format_info.array[i].spa_format, NULL, 0);
@@ -493,17 +456,9 @@ static void clear_format_info(obs_pipewire_stream *obs_pw_stream)
 
 static void remove_modifier_from_format(obs_pipewire_stream *obs_pw_stream, uint32_t spa_format, uint64_t modifier)
 {
-	obs_pipewire *obs_pw = obs_pw_stream->obs_pw;
-
 	for (size_t i = 0; i < obs_pw_stream->format_info.num; i++) {
 		if (obs_pw_stream->format_info.array[i].spa_format != spa_format)
 			continue;
-
-		if (!check_pw_version(&obs_pw->server_version, 0, 3, 40)) {
-			da_erase_range(obs_pw_stream->format_info.array[i].modifiers, 0,
-				       obs_pw_stream->format_info.array[i].modifiers.num - 1);
-			continue;
-		}
 
 		int idx = da_find(obs_pw_stream->format_info.array[i].modifiers, &modifier, 0);
 		while (idx != -1) {
@@ -854,7 +809,6 @@ static void on_process_cb(void *user_data)
 static void on_param_changed_cb(void *user_data, uint32_t id, const struct spa_pod *param)
 {
 	obs_pipewire_stream *obs_pw_stream = user_data;
-	obs_pipewire *obs_pw = obs_pw_stream->obs_pw;
 	struct spa_pod_builder pod_builder;
 	const struct spa_pod *params[5];
 	const char *format_name;
@@ -880,9 +834,7 @@ static void on_param_changed_cb(void *user_data, uint32_t id, const struct spa_p
 	output_flags = obs_source_get_output_flags(obs_pw_stream->source);
 
 	buffer_types = 1 << SPA_DATA_MemPtr;
-	bool has_modifier = spa_pod_find_prop(param, NULL, SPA_FORMAT_VIDEO_modifier) != NULL;
-	if ((has_modifier || check_pw_version(&obs_pw->server_version, 0, 3, 24)) &&
-	    (output_flags & OBS_SOURCE_ASYNC_VIDEO) != OBS_SOURCE_ASYNC_VIDEO)
+	if ((output_flags & OBS_SOURCE_ASYNC_VIDEO) != OBS_SOURCE_ASYNC_VIDEO)
 		buffer_types |= 1 << SPA_DATA_DmaBuf;
 
 	blog(LOG_INFO, "[pipewire] Negotiated format:");
@@ -891,7 +843,7 @@ static void on_param_changed_cb(void *user_data, uint32_t id, const struct spa_p
 	blog(LOG_INFO, "[pipewire]     Format: %d (%s)", obs_pw_stream->format.info.raw.format,
 	     format_name ? format_name : "unknown format");
 
-	if (has_modifier) {
+	if (spa_pod_find_prop(param, NULL, SPA_FORMAT_VIDEO_modifier)) {
 		blog(LOG_INFO, "[pipewire]     Modifier: 0x%" PRIx64, obs_pw_stream->format.info.raw.modifier);
 	}
 
@@ -925,16 +877,12 @@ static void on_param_changed_cb(void *user_data, uint32_t id, const struct spa_p
 							SPA_PARAM_META_size,
 							SPA_POD_Int(sizeof(struct spa_meta_header)));
 
-#if PW_CHECK_VERSION(0, 3, 62)
-	if (check_pw_version(&obs_pw->server_version, 0, 3, 62)) {
-		/* Video transformation */
-		params[n_params++] = spa_pod_builder_add_object(&pod_builder, SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
-								SPA_PARAM_META_type,
-								SPA_POD_Id(SPA_META_VideoTransform),
-								SPA_PARAM_META_size,
-								SPA_POD_Int(sizeof(struct spa_meta_videotransform)));
-	}
-#endif
+	/* Video transformation */
+	params[n_params++] = spa_pod_builder_add_object(&pod_builder, SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
+							SPA_PARAM_META_type,
+							SPA_POD_Id(SPA_META_VideoTransform),
+							SPA_PARAM_META_size,
+							SPA_POD_Int(sizeof(struct spa_meta_videotransform)));
 	pw_stream_update_params(obs_pw_stream->stream, params, n_params);
 	obs_pw_stream->negotiated = true;
 }
