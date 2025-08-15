@@ -126,15 +126,6 @@ static bool parse_pw_version(struct obs_pw_version *dst, const char *version)
 	return n_matches == 3;
 }
 
-static bool check_pw_version(const struct obs_pw_version *pw_version, int major, int minor, int micro)
-{
-	if (pw_version->major != major)
-		return pw_version->major > major;
-	if (pw_version->minor != minor)
-		return pw_version->minor > minor;
-	return pw_version->micro >= micro;
-}
-
 static void update_pw_versions(obs_pipewire *obs_pw, const char *version)
 {
 	blog(LOG_INFO, "[pipewire] Server version: %s", version);
@@ -852,7 +843,7 @@ static void on_param_changed_cb(void *user_data, uint32_t id, const struct spa_p
 	blog(LOG_INFO, "[pipewire]     Format: %d (%s)", obs_pw_stream->format.info.raw.format,
 	     format_name ? format_name : "unknown format");
 
-	if (has_modifier) {
+	if (spa_pod_find_prop(param, NULL, SPA_FORMAT_VIDEO_modifier)) {
 		blog(LOG_INFO, "[pipewire]     Modifier: 0x%" PRIx64, obs_pw_stream->format.info.raw.modifier);
 	}
 
